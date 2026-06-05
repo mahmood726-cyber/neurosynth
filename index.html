@@ -4,7 +4,7 @@
   <meta charset="UTF-8">
   <title>NeuroSynthesizer v11.0: Clinical Edition</title>
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600&family=Inter:wght@300;400;500;600;700&family=Merriweather:wght@300;400;700&display=swap" rel="stylesheet">
+  <!-- fonts removed for offline use -->
   <style>
     /* --- V11 Theme --- */
     :root {
@@ -332,6 +332,11 @@
 
 <!-- WORKER -->
 <script id="worker-code" type="javascript/worker">
+  // Pure stat core shared with the main thread (single source of truth).
+  // ENGINE_URL is replaced with an absolute URL by the bootstrapping main
+  // thread before this worker source is turned into a Blob.
+  importScripts('ENGINE_URL');
+
   self.onmessage = function(e) {
     const { trials, baseB, baseH, weightH, nSims, rho, timeMin, drugType, tnkModel } = e.data;
     
@@ -420,73 +425,11 @@
 
     self.postMessage({ type: 'complete', data: { reB, reH, plotPoints, histData, stats } });
   };
-
-  function applyOrdinalShift(dist, OR) {
-    let cum = [];
-    let sum = 0;
-    for(let p of dist) { sum+=p; cum.push(sum); }
-    cum[cum.length-1] = 1.0; 
-    let newCum = cum.map(p => {
-      if(p >= 1) return 1;
-      const odds = p / (1-p);
-      const newOdds = odds * OR; 
-      return newOdds / (1+newOdds);
-    });
-    let newDist = [];
-    let prev = 0;
-    for(let c of newCum) { newDist.push(c - prev); prev = c; }
-    return newDist;
-  }
-
-  function oddsToAbs(base, logOR) {
-    const o = base/(1-base);
-    const n = o*Math.exp(logOR);
-    return (n/(1+n)) - base;
-  }
-
-  function buildHistogram(arr, bins) {
-    const min = arr[0], max = arr[arr.length-1];
-    const step = (max-min)/bins;
-    const res = [];
-    let current = min;
-    let idx = 0;
-    for(let i=0; i<bins; i++) {
-      let count = 0;
-      const next = current + step;
-      while(idx < arr.length && arr[idx] < next) { count++; idx++; }
-      res.push({ x: current + step/2, y: count });
-      current = next;
-    }
-    return res;
-  }
-
-  function runREML(data, kEff, kSe) {
-    const y = data.map(d=>d[kEff]);
-    const v = data.map(d=>d[kSe]**2);
-    let tau2 = 0.02;
-    for(let i=0; i<50; i++) {
-      const w = v.map(x => 1/(x+tau2));
-      const sw = w.reduce((a,b)=>a+b,0);
-      const sw2 = w.reduce((a,b)=>a+b*b,0);
-      const mu = w.reduce((a,b,j)=>a+b*y[j],0)/sw;
-      let q = 0;
-      y.forEach((val,j) => q += w[j]*w[j]*((val-mu)**2 - v[j] - tau2 + 1/sw));
-      const info = 0.5*(sw2 - sw2*sw2/sw);
-      const d = (0.5*q)/Math.max(info, 1e-12);
-      tau2 = Math.max(0, tau2+d);
-      if(Math.abs(d) < 1e-9) break;
-    }
-    const w = v.map(x => 1/(x+tau2));
-    const sw = w.reduce((a,b)=>a+b,0);
-    return {
-      mu: w.reduce((a,b,j)=>a+b*y[j],0)/sw,
-      se_pool: Math.sqrt(1/sw),
-      tau2,
-      forest: data.map((d,i)=>({ id: d.id, val: d[kEff], lo: d[kEff]-1.96*d[kSe], hi: d[kEff]+1.96*d[kSe] }))
-    };
-  }
+  // runREML, applyOrdinalShift, oddsToAbs, buildHistogram are provided by
+  // engine.js (loaded above via importScripts) — single source of truth.
 </script>
 
+<script src="engine.js"></script>
 <script>
 // --- MAIN THREAD ---
 
@@ -500,7 +443,12 @@ const TRIALS = [
 
 let currentDrug = 'tpa';
 
-const blob = new Blob([document.getElementById('worker-code').textContent], {type: "text/javascript"});
+// Resolve engine.js to an absolute URL so the Blob-backed worker can
+// importScripts() it (a blob: worker cannot resolve a relative path itself).
+const engineURL = new URL('engine.js', document.baseURI).href;
+const workerSrc = document.getElementById('worker-code').textContent
+  .replace('ENGINE_URL', engineURL);
+const blob = new Blob([workerSrc], {type: "text/javascript"});
 const worker = new Worker(window.URL.createObjectURL(blob));
 
 worker.onmessage = e => {
