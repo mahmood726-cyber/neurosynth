@@ -30,10 +30,16 @@ function runREML(data, kEff, kSe) {
     const w = v.map(x => 1/(x+tau2));
     const sw = w.reduce((a,b)=>a+b,0);
     const sw2 = w.reduce((a,b)=>a+b*b,0);
+    const sw3 = w.reduce((a,b)=>a+b*b*b,0);
     const mu = w.reduce((a,b,j)=>a+b*y[j],0)/sw;
     let q = 0;
     y.forEach((val,j) => q += w[j]*w[j]*((val-mu)**2 - v[j] - tau2 + 1/sw));
-    const info = 0.5*(sw2 - sw2*sw2/sw);
+    // REML expected (Fisher) information for tau2 = 0.5*tr(P^2), which is
+    // always >= 0. The previous form 0.5*(sw2 - sw2^2/sw) dropped the sw3
+    // term and went negative when weights are large (small variances),
+    // so the 1e-12 floor made the Newton step explode (tau2 -> ~1e14 on
+    // dat.bcg). Viechtbauer (2005) REML Fisher scoring.
+    const info = 0.5*(sw2 - 2*sw3/sw + (sw2*sw2)/(sw*sw));
     const d = (0.5*q)/Math.max(info, 1e-12);
     tau2 = Math.max(0, tau2+d);
     if(Math.abs(d) < 1e-9) break;
